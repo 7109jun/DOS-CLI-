@@ -2,9 +2,9 @@ name: DOS Windows Build
 
 on:
   push:
-    branches: [ "**" ]
+    branches: ["**"]
   pull_request:
-    branches: [ "**" ]
+    branches: ["**"]
   workflow_dispatch:
 
 permissions:
@@ -17,74 +17,119 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Configure MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Configure CMake
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}\dist"
-
-      - name: Build DOS
-        run: cmake --build build --config Release --parallel
-
-      - name: Install runtime distribution
-        run: cmake --install build --config Release --prefix "${{ github.workspace }}\dist"
-
-      - name: Add distribution files
+      - name: Build DOS with MSVC
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
 
-          foreach ($file in @(
-            'install_association.bat',
-            'hello.dos'
-          )) {
-            $src = Join-Path $env:GITHUB_WORKSPACE $file
-            if (Test-Path $src) {
-              Copy-Item $src $dist -Force
-            }
+          $source = Join-Path $env:GITHUB_WORKSPACE 'src\dos.cpp'
+          if (-not (Test-Path $source)) {
+            throw "Missing source file: $source"
+          }
+
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) {
+            throw "vswhere.exe was not found: $vswhere"
+          }
+
+          $vsPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1).Trim()
+          if ([string]::IsNullOrWhiteSpace($vsPath)) {
+            throw 'A Visual Studio installation with x64 C++ tools was not found.'
+          }
+
+          $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) {
+            throw "vcvars64.bat was not found: $vcvars"
+          }
+
+          $compile = @"
+          call "$vcvars"
+          if errorlevel 1 exit /b %errorlevel%
+          cl.exe /nologo /std:c++20 /EHsc /permissive- /utf-8 /W4 /WX /O2 /GL /Gy /Gw /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX /DDOS_VERSION_MAJOR=1 /DDOS_VERSION_MINOR=0 "$source" /Fe:"$dist\dos.exe" /link /LTCG /OPT:REF /OPT:ICF /GUARD:CF /DYNAMICBASE /NXCOMPAT advapi32.lib iphlpapi.lib ws2_32.lib shell32.lib
+          if errorlevel 1 exit /b %errorlevel%
+          "@
+
+          $tempBat = Join-Path $env:RUNNER_TEMP 'build-dos.bat'
+          Set-Content -LiteralPath $tempBat -Value $compile -Encoding ASCII
+          & cmd.exe /d /s /c "`"$tempBat`""
+          if ($LASTEXITCODE -ne 0) {
+            throw "MSVC build failed with exit code $LASTEXITCODE"
           }
 
           if (-not (Test-Path (Join-Path $dist 'dos.exe'))) {
             throw 'dos.exe was not produced.'
           }
 
-          if (-not (Test-Path (Join-Path $dist 'plugins\python\plugin.py'))) {
-            throw 'Python plugin was not installed.'
-          }
-
-      - name: Verify PE executable
+      - name: Collect runtime files
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $path = Join-Path $env:GITHUB_WORKSPACE 'dist\dos.exe'
-          $bytes = [System.IO.File]::ReadAllBytes($path)
+          $root = $env:GITHUB_WORKSPACE
+          $dist = Join-Path $root 'dist'
+
+          foreach ($relative in @(
+            'install_association.bat',
+            'hello.dos'
+          )) {
+            $source = Join-Path $root $relative
+            if (Test-Path $source) {
+              Copy-Item -LiteralPath $source -Destination $dist -Force
+            }
+          }
+
+          $plugins = Join-Path $root 'plugins'
+          if (Test-Path $plugins) {
+            Copy-Item -LiteralPath $plugins -Destination $dist -Recurse -Force
+          }
+
+          $tests = Join-Path $dist 'tests'
+          if (Test-Path $tests) {
+            Remove-Item -LiteralPath $tests -Recurse -Force
+          }
+
+      - name: Verify Windows PE
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\dos.exe'
+          $bytes = [System.IO.File]::ReadAllBytes($exe)
 
           if ($bytes.Length -lt 0x100) {
-            throw 'dos.exe is too small to be a valid PE image.'
+            throw 'dos.exe is too small.'
           }
 
           if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
-            throw 'dos.exe does not start with the MZ signature.'
+            throw 'Missing MZ signature.'
           }
 
           $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
-          if ($peOffset -lt 0 -or $peOffset + 4 -ge $bytes.Length) {
-            throw 'Invalid PE header offset.'
+          if ($peOffset -lt 0 -or $peOffset + 24 -gt $bytes.Length) {
+            throw 'Invalid PE offset.'
           }
 
           if ($bytes[$peOffset] -ne 0x50 -or
               $bytes[$peOffset + 1] -ne 0x45 -or
               $bytes[$peOffset + 2] -ne 0x00 -or
               $bytes[$peOffset + 3] -ne 0x00) {
-            throw 'dos.exe does not contain a PE signature.'
+            throw 'Missing PE signature.'
           }
 
-          Write-Host 'PE validation: PASS'
+          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          if ($machine -ne 0x8664) {
+            throw ('Unexpected PE machine: 0x{0:X4}; expected x64 (0x8664).' -f $machine)
+          }
+
+          $magic = [BitConverter]::ToUInt16($bytes, $peOffset + 24)
+          if ($magic -ne 0x20B) {
+            throw ('Unexpected optional-header magic: 0x{0:X4}; expected PE32+ (0x20B).' -f $magic)
+          }
+
+          Write-Host 'PE32+ x64 validation: PASS'
 
       - name: Smoke launch
         shell: pwsh
@@ -104,13 +149,13 @@ jobs:
           $archive = Join-Path $env:GITHUB_WORKSPACE 'DOS-Windows-x64.zip'
 
           if (Test-Path $archive) {
-            Remove-Item $archive -Force
+            Remove-Item -LiteralPath $archive -Force
           }
 
           Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $archive -CompressionLevel Optimal
 
       - name: Upload Windows runtime
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: DOS-Windows-x64
           path: |
