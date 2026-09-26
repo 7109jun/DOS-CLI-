@@ -90,29 +90,36 @@ jobs:
 
           $output = Join-Path $dist 'dos.exe'
           $compatHeader = Join-Path $env:RUNNER_TEMP 'dos-msvc-compat.hpp'
+          $windowsSource = Join-Path $env:RUNNER_TEMP 'dos.windows.cpp'
 
-          # CI-only MSVC compatibility header.
-          # The repository source is never modified.
+          # The repository source is never modified.  For MSVC only, create a
+          # temporary translation unit that provides two UCRT compatibility
+          # shims and then includes the exact checked-out source text.
           #
-          # The DOS source uses _environ in the `set` command. Some MSVC/UCRT
-          # configurations expose this CRT global differently. We replace only
-          # the CI view of that macro with a char** provider backed by the Win32
-          # environment block. The provider owns a stable copy until the next
-          # call, which is sufficient for the read-only enumeration in DOS.
-          $compat = @'
+          # 1) Some runner/UCRT combinations expose iswspace differently.
+          #    Replace only the call spelling with a stable wrapper.
+          # 2) _environ has incompatible CRT representations across toolsets.
+          #    Replace the single source-level use with a char** provider backed
+          #    by GetEnvironmentStringsA().  This avoids depending on _environ
+          #    declarations/macros altogether.
+          $prefix = @'
           #pragma once
           #ifndef NOMINMAX
           #define NOMINMAX
           #endif
 
           #include <windows.h>
+          #include <cwctype>
           #include <cstdlib>
           #include <cstring>
           #include <string>
           #include <vector>
 
-          #ifdef _MSC_VER
-          static char** dos_ci_environ() {
+          static bool dos_ci_iswspace(wchar_t value) noexcept {
+              return ::iswspace(value) != 0;
+          }
+
+          static char** dos_ci_environ_value() {
               static std::vector<std::string> entries;
               static std::vector<char*> pointers;
 
@@ -121,7 +128,8 @@ jobs:
 
               LPCH block = ::GetEnvironmentStringsA();
               if (block == nullptr) {
-                  return nullptr;
+                  pointers.push_back(nullptr);
+                  return pointers.data();
               }
 
               for (LPCH p = block; *p != '\0'; p += std::strlen(p) + 1) {
@@ -135,24 +143,33 @@ jobs:
                   pointers.push_back(entry.data());
               }
               pointers.push_back(nullptr);
-
               return pointers.data();
           }
-
-          #ifdef _environ
-          #undef _environ
-          #endif
-          #define _environ dos_ci_environ()
-          #endif
           '@
 
-          Set-Content -LiteralPath $compatHeader -Value $compat -Encoding UTF8
+          $sourceText = Get-Content -LiteralPath $source -Raw
+          $patchedSource = $sourceText
+
+          # Token-level CI substitutions.  Only the temporary file is changed.
+          $patchedSource = [regex]::Replace($patchedSource, '\bstd::iswspace\b', 'dos_ci_iswspace')
+          $patchedSource = [regex]::Replace($patchedSource, '\b_environ\b', 'dos_ci_environ_value()')
+
+          if ($patchedSource -eq $sourceText) {
+            throw 'CI compatibility transform made no changes; refusing to compile an unexpected source copy.'
+          }
+
+          Set-Content -LiteralPath $windowsSource -Value ($prefix + "`r`n" + $patchedSource) -Encoding UTF8
+
+          Write-Host 'MSVC CI source transformations: applied'
+          Write-Host '  std::iswspace -> dos_ci_iswspace'
+          Write-Host '  _environ      -> dos_ci_environ_value()'
+          Write-Host "  temporary source: $windowsSource"
 
           $compile = @"
           call "$vcvars"
           if errorlevel 1 exit /b %errorlevel%
           set "CL="
-          cl.exe /nologo /std:c++20 /EHsc /permissive- /utf-8 /W4 /WX /O2 /GL /Gy /Gw /FI"$compatHeader" /D_CRT_SECURE_NO_WARNINGS /DDOS_VERSION_MAJOR=1 /DDOS_VERSION_MINOR=0 "$source" /Fe:"$output" /link /LTCG /OPT:REF /OPT:ICF /GUARD:CF /DYNAMICBASE /NXCOMPAT advapi32.lib iphlpapi.lib ws2_32.lib shell32.lib
+          cl.exe /nologo /std:c++20 /EHsc /permissive- /utf-8 /W4 /WX /O2 /GL /Gy /Gw /D_CRT_SECURE_NO_WARNINGS /DDOS_VERSION_MAJOR=1 /DDOS_VERSION_MINOR=0 "$windowsSource" /Fe:"$output" /link /LTCG /OPT:REF /OPT:ICF /GUARD:CF /DYNAMICBASE /NXCOMPAT advapi32.lib iphlpapi.lib ws2_32.lib shell32.lib
           if errorlevel 1 exit /b %errorlevel%
           "@
 
