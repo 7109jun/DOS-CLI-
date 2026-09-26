@@ -1,0 +1,7 @@
+import python
+
+println("DOS stage 3")
+println("python-available=" + string(python.available()))
+println("python-command=" + python.version())
+python.run("python_test.py")
+python.exec("print(\"python-exec: ok\")")

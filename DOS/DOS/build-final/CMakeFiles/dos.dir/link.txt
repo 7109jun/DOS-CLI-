@@ -1,0 +1,1 @@
+/usr/bin/c++ -O3 -DNDEBUG -flto=auto -fno-fat-lto-objects -flto -Wl,--gc-sections -Wl,--dependency-file=CMakeFiles/dos.dir/link.d CMakeFiles/dos.dir/src/dos.cpp.o -o dos

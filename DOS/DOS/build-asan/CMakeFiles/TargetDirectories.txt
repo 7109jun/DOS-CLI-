@@ -1,0 +1,7 @@
+/mnt/data/DOS/build-asan/CMakeFiles/dos.dir
+/mnt/data/DOS/build-asan/CMakeFiles/edit_cache.dir
+/mnt/data/DOS/build-asan/CMakeFiles/rebuild_cache.dir
+/mnt/data/DOS/build-asan/CMakeFiles/list_install_components.dir
+/mnt/data/DOS/build-asan/CMakeFiles/install.dir
+/mnt/data/DOS/build-asan/CMakeFiles/install/local.dir
+/mnt/data/DOS/build-asan/CMakeFiles/install/strip.dir

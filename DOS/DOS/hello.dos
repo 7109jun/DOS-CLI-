@@ -1,0 +1,36 @@
+echo DOS 1.0
+
+string name = "world"
+println("Hello, " + name)
+
+struct User {
+    string name
+    int age
+}
+
+User user
+user.name = "DOS"
+user.age = 1
+
+int add(int a, int b) {
+    return a + b
+}
+
+int result = add(10, 20)
+println("10 + 20 = " + string(result))
+println(user.name)
+
+if result > 20 {
+    println("condition works")
+} else {
+    println("condition failed")
+}
+
+for int i = 0; i < 3; i++ {
+    println("i = " + string(i))
+}
+
+int value = 100
+int* ptr = &value
+*ptr = 200
+println("pointer = " + string(value))

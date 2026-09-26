@@ -1,0 +1,51 @@
+println("DOS stage 4")
+
+int x = 1
+int old = x++
+assert(old == 1, "postfix value")
+assert(x == 2, "postfix mutation")
+
+int[] a = [1, 2, 3]
+a[1] = 20
+a[2] += 7
+assert(a[1] == 20, "array assignment")
+assert(a[2] == 10, "array compound assignment")
+
+int shifted = 1 << 4
+assert(shifted == 16, "left shift")
+assert((shifted >> 2) == 4, "right shift")
+
+string branch = true ? "yes" : "no"
+assert(branch == "yes", "conditional")
+
+switch x {
+    case 1:
+        println("bad case")
+        break
+    case 2:
+        println("switch=ok")
+        break
+    default:
+        println("bad default")
+}
+
+try {
+    throw "failure"
+} catch e {
+    println("caught=" + e)
+}
+
+assert(math.abs(-10) == 10, "abs")
+assert(math.sqrt(81) == 9, "sqrt")
+assert(math.pow(2, 5) == 32, "pow")
+assert(string.upper("dos") == "DOS", "upper")
+assert(string.lower("DOS") == "dos", "lower")
+assert(string.contains("hello dos", "dos"), "contains")
+assert(string.substr("abcdef", 2, 3) == "cde", "substr")
+
+ptr<int> p = memory.alloc()
+*p = 55
+assert((*p) == 55, "allocated pointer")
+assert(memory.free(p), "free")
+
+println("stage4: ok")

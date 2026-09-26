@@ -1,0 +1,33 @@
+import fs
+import env
+import process
+import console
+
+println("DOS stage 2")
+
+fs.mkdir("stage2_tmp")
+fs.write("stage2_tmp/a.txt", "hello")
+fs.append("stage2_tmp/a.txt", " world")
+
+string content = fs.read("stage2_tmp/a.txt")
+println(content)
+
+if fs.exists("stage2_tmp/a.txt") {
+    println("file: ok")
+}
+
+string[] files = fs.find("stage2_tmp", "*.txt", false)
+println("files=" + string(len(files)))
+
+env.set("DOS_STAGE2", "ok")
+println("env=" + env.get("DOS_STAGE2"))
+
+int pid = process.id()
+println("pid-positive=" + string(pid > 0))
+
+var entries = fs.list("stage2_tmp")
+println("entry-count=" + string(len(entries)))
+
+fs.remove("stage2_tmp/a.txt")
+fs.rmdir("stage2_tmp")
+println("cleanup: ok")

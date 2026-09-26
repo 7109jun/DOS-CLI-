@@ -1,0 +1,24 @@
+function greet(string who) {
+    println("Hello, " + who)
+}
+
+greet("DOS")
+
+int x = 5
+x += 2
+x *= 3
+if x == 21 {
+    println("compound assignment: ok")
+} else if x == 20 {
+    println("compound assignment: wrong-branch")
+} else {
+    println("compound assignment: fail")
+}
+
+const int LIMIT = 2
+for int i = 0; i < LIMIT; i++ {
+    println("i=" + string(i))
+}
+
+int[] values = [10, 20]
+println(values[0])

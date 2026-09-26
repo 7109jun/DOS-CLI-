@@ -1,0 +1,52 @@
+println("DOS stage 5")
+
+function int factorial(int n) {
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+assert(factorial(6) == 720, "recursion")
+
+int x = 4
+int old = ++x
+assert(old == 5, "prefix increment")
+assert(x == 5, "prefix mutation")
+
+int bits = 1 << 5
+assert((bits >> 2) == 8, "shifts")
+assert((15 & 7) == 7, "bit and")
+assert((8 | 3) == 11, "bit or")
+assert((8 ^ 3) == 11, "bit xor")
+
+string message = true ? "ok" : "bad"
+assert(message == "ok", "conditional")
+
+try {
+    int broken = 1 / 0
+    println(broken)
+} catch e {
+    assert(e.message == "division by zero", "error catch")
+}
+
+struct Point {
+    int x
+    int y
+}
+
+Point p
+p.x = 10
+p.y = 20
+assert(p.x + p.y == 30, "struct members")
+
+int[] values = [1, 2, 3]
+values[1] *= 10
+assert(values[1] == 20, "array lvalue")
+
+assert(string.substr("DOS-CLI", 0, 3) == "DOS", "substring")
+assert(string.contains("DOS CLI", "CLI"), "contains")
+assert(math.min(10, 20) == 10, "min")
+assert(math.max(10, 20) == 20, "max")
+
+println("stage5: ok")

@@ -1,0 +1,7 @@
+/mnt/data/DOS/build-final/CMakeFiles/dos.dir
+/mnt/data/DOS/build-final/CMakeFiles/edit_cache.dir
+/mnt/data/DOS/build-final/CMakeFiles/rebuild_cache.dir
+/mnt/data/DOS/build-final/CMakeFiles/list_install_components.dir
+/mnt/data/DOS/build-final/CMakeFiles/install.dir
+/mnt/data/DOS/build-final/CMakeFiles/install/local.dir
+/mnt/data/DOS/build-final/CMakeFiles/install/strip.dir

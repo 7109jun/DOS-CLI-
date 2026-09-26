@@ -1,0 +1,43 @@
+println("DOS stage 1")
+
+int a = 10
+int b = 20
+int sum = a + b
+
+struct User {
+    string name
+    int age
+}
+
+User user
+user.name = "DOS"
+user.age = 1
+
+function int add(int x, int y) {
+    return x + y
+}
+
+if add(a, b) == 30 {
+    println("if: ok")
+} else {
+    println("if: fail")
+}
+
+int i = 0
+while i < 2 {
+    println("while=" + string(i))
+    i++
+}
+
+for int j = 0; j < 3; j++ {
+    println("for=" + string(j))
+}
+
+int value = 100
+int* ptr = &value
+*ptr = 200
+println("pointer=" + string(value))
+
+int[] nums = [1, 2, 3]
+println("array=" + string(nums[1]))
+println("member=" + user.name)
