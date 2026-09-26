@@ -1,0 +1,120 @@
+name: DOS Windows Build
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    name: Windows x64 Release
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Configure CMake
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_INSTALL_PREFIX="${{ github.workspace }}\dist"
+
+      - name: Build DOS
+        run: cmake --build build --config Release --parallel
+
+      - name: Install runtime distribution
+        run: cmake --install build --config Release --prefix "${{ github.workspace }}\dist"
+
+      - name: Add distribution files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
+
+          foreach ($file in @(
+            'install_association.bat',
+            'hello.dos'
+          )) {
+            $src = Join-Path $env:GITHUB_WORKSPACE $file
+            if (Test-Path $src) {
+              Copy-Item $src $dist -Force
+            }
+          }
+
+          if (-not (Test-Path (Join-Path $dist 'dos.exe'))) {
+            throw 'dos.exe was not produced.'
+          }
+
+          if (-not (Test-Path (Join-Path $dist 'plugins\python\plugin.py'))) {
+            throw 'Python plugin was not installed.'
+          }
+
+      - name: Verify PE executable
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = Join-Path $env:GITHUB_WORKSPACE 'dist\dos.exe'
+          $bytes = [System.IO.File]::ReadAllBytes($path)
+
+          if ($bytes.Length -lt 0x100) {
+            throw 'dos.exe is too small to be a valid PE image.'
+          }
+
+          if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
+            throw 'dos.exe does not start with the MZ signature.'
+          }
+
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
+          if ($peOffset -lt 0 -or $peOffset + 4 -ge $bytes.Length) {
+            throw 'Invalid PE header offset.'
+          }
+
+          if ($bytes[$peOffset] -ne 0x50 -or
+              $bytes[$peOffset + 1] -ne 0x45 -or
+              $bytes[$peOffset + 2] -ne 0x00 -or
+              $bytes[$peOffset + 3] -ne 0x00) {
+            throw 'dos.exe does not contain a PE signature.'
+          }
+
+          Write-Host 'PE validation: PASS'
+
+      - name: Smoke launch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\dos.exe'
+          & $exe --version
+          if ($LASTEXITCODE -ne 0) {
+            throw "dos.exe --version failed with exit code $LASTEXITCODE"
+          }
+
+      - name: Create Windows distribution archive
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          $archive = Join-Path $env:GITHUB_WORKSPACE 'DOS-Windows-x64.zip'
+
+          if (Test-Path $archive) {
+            Remove-Item $archive -Force
+          }
+
+          Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $archive -CompressionLevel Optimal
+
+      - name: Upload Windows runtime
+        uses: actions/upload-artifact@v4
+        with:
+          name: DOS-Windows-x64
+          path: |
+            dist/**
+            DOS-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14
