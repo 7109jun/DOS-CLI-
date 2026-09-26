@@ -95,14 +95,31 @@ jobs:
           $tempSource = Join-Path $env:RUNNER_TEMP 'dos.windows.cpp'
           $text = Get-Content -LiteralPath $source -Raw
 
-          # MSVC requires the wide-character classification declarations explicitly.
-          # /FI below also guarantees <cwctype> is available even if the checkout is older.
-          # Some MSVC CRT versions expose _environ through a different declaration;
-          # use the supported _get_environ() API in the temporary build copy.
-          $text = $text.Replace(
-            'char** environment = _environ;',
-            'char** environment = nullptr;' + [Environment]::NewLine + '            _get_environ(&environment);'
-          )
+          # MSVC build-only compatibility transform. The repository source is never modified.
+          # The checked-in source uses _environ, but this runner build avoids that CRT global entirely
+          # and enumerates the process environment through the documented Win32 API.
+          $text = $text -replace "`r`n?", "`n"
+          $oldBlock = @(
+            '            char** environment = _environ;'
+            "            for (char** p = environment; p && *p; ++p) std::cout << *p << '\n';"
+          ) -join "`n"
+          $newBlock = @(
+            '            LPCH environment = GetEnvironmentStringsA();'
+            '            if (environment) {'
+            "                for (LPCH p = environment; *p; p += std::strlen(p) + 1) std::cout << p << '\n';"
+            '                FreeEnvironmentStringsA(environment);'
+            '            }'
+          ) -join "`n"
+
+          if (-not $text.Contains($oldBlock)) {
+            throw 'Expected _environ block was not found; refusing to compile an unpatched MSVC source copy.'
+          }
+
+          $text = $text.Replace($oldBlock, $newBlock)
+          if ($text.Contains('_environ')) {
+            throw 'MSVC temporary source still contains _environ.'
+          }
+
           Set-Content -LiteralPath $tempSource -Value $text -Encoding UTF8
 
           $compile = @"
