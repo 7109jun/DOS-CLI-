@@ -26,11 +26,6 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $repo = $env:GITHUB_WORKSPACE
 
-          # Supports either:
-          #   <repo>\src\dos.cpp
-          # or
-          #   <repo>\DOS\src\dos.cpp
-          # without assuming the repository has a particular nesting level.
           $candidate = Get-ChildItem -LiteralPath $repo -Recurse -File -Filter 'dos.cpp' |
             Where-Object {
               $_.FullName -match '\\src\\dos\.cpp$' -and
@@ -41,10 +36,6 @@ jobs:
             Select-Object -First 1
 
           if ($null -eq $candidate) {
-            Write-Host 'Could not locate src\dos.cpp. Repository tree:'
-            Get-ChildItem -LiteralPath $repo -Recurse -File -Depth 4 |
-              Where-Object { $_.FullName -notmatch '\\.git(\\|$)' } |
-              Select-Object -ExpandProperty FullName
             throw 'src\dos.cpp was not found.'
           }
 
@@ -72,13 +63,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) {
-            throw "vswhere.exe was not found: $vswhere"
-          }
-
-          $vsPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath |
-            Select-Object -First 1).Trim()
-
+          $vsPath = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1).Trim()
           if ([string]::IsNullOrWhiteSpace($vsPath)) {
             throw 'Visual Studio x64 C++ tools were not found.'
           }
@@ -92,37 +77,27 @@ jobs:
           $compatHeader = Join-Path $env:RUNNER_TEMP 'dos-msvc-compat.hpp'
           $windowsSource = Join-Path $env:RUNNER_TEMP 'dos.windows.cpp'
 
-          # The repository source is never modified.  For MSVC only, create a
-          # temporary translation unit that provides two UCRT compatibility
-          # shims and then includes the exact checked-out source text.
-          #
-          # 1) Some runner/UCRT combinations expose iswspace differently.
-          #    Replace only the call spelling with a stable wrapper.
-          # 2) _environ has incompatible CRT representations across toolsets.
-          #    Replace the single source-level use with a char** provider backed
-          #    by GetEnvironmentStringsA().  This avoids depending on _environ
-          #    declarations/macros altogether.
-          $prefix = @'
+          # Do not modify the repository source. The temporary source performs
+          # only the two MSVC compatibility substitutions actually required by
+          # the checked-in source:
+          #   std::iswspace(c) -> ::iswspace(c)
+          #   _environ        -> dos_ci_environ_ptr
+          # The second replacement uses a real char** variable, not a function
+          # substitution, so MSVC cannot produce char* -> char** conversion errors.
+          $compat = @'
           #pragma once
           #ifndef NOMINMAX
           #define NOMINMAX
           #endif
-
           #include <windows.h>
-          #include <cwctype>
           #include <cstdlib>
           #include <cstring>
           #include <string>
           #include <vector>
 
-          static bool dos_ci_iswspace(wchar_t value) noexcept {
-              return ::iswspace(value) != 0;
-          }
-
-          static char** dos_ci_environ_value() {
+          static char** dos_ci_make_environ() {
               static std::vector<std::string> entries;
               static std::vector<char*> pointers;
-
               entries.clear();
               pointers.clear();
 
@@ -135,7 +110,6 @@ jobs:
               for (LPCH p = block; *p != '\0'; p += std::strlen(p) + 1) {
                   entries.emplace_back(p);
               }
-
               ::FreeEnvironmentStringsA(block);
 
               pointers.reserve(entries.size() + 1);
@@ -145,24 +119,36 @@ jobs:
               pointers.push_back(nullptr);
               return pointers.data();
           }
+
+          static char** dos_ci_environ_ptr = dos_ci_make_environ();
           '@
+          Set-Content -LiteralPath $compatHeader -Value $compat -Encoding ASCII
 
-          $sourceText = Get-Content -LiteralPath $source -Raw
-          $patchedSource = $sourceText
-
-          # Token-level CI substitutions.  Only the temporary file is changed.
-          $patchedSource = [regex]::Replace($patchedSource, '\bstd::iswspace\b', 'dos_ci_iswspace')
-          $patchedSource = [regex]::Replace($patchedSource, '\b_environ\b', 'dos_ci_environ_value()')
-
-          if ($patchedSource -eq $sourceText) {
-            throw 'CI compatibility transform made no changes; refusing to compile an unexpected source copy.'
+          $sourceText = Get-Content -LiteralPath $source -Raw -Encoding UTF8
+          if (-not $sourceText.Contains('std::iswspace')) {
+            throw 'The checked-out source no longer contains std::iswspace; CI compatibility assumptions need review.'
+          }
+          if (-not $sourceText.Contains('_environ')) {
+            throw 'The checked-out source no longer contains _environ; CI compatibility assumptions need review.'
           }
 
-          Set-Content -LiteralPath $windowsSource -Value ($prefix + "`r`n" + $patchedSource) -Encoding UTF8
+          $patchedSource = $sourceText
+          $patchedSource = $patchedSource.Replace('std::iswspace', '::iswspace')
+          $patchedSource = $patchedSource.Replace('_environ', 'dos_ci_environ_ptr')
 
-          Write-Host 'MSVC CI source transformations: applied'
-          Write-Host '  std::iswspace -> dos_ci_iswspace'
-          Write-Host '  _environ      -> dos_ci_environ_value()'
+          if (-not $patchedSource.Contains('::iswspace')) {
+            throw 'MSVC shim substitution for std::iswspace failed.'
+          }
+          if (-not $patchedSource.Contains('char** environment = dos_ci_environ_ptr')) {
+            throw 'MSVC shim substitution for _environ failed.'
+          }
+
+          # Write UTF-8 without a BOM; MSVC accepts this consistently with /utf-8.
+          [System.IO.File]::WriteAllText($windowsSource, $compat + "`r`n" + $patchedSource, [System.Text.UTF8Encoding]::new($false))
+
+          Write-Host 'MSVC compatibility source generated.'
+          Write-Host '  std::iswspace -> ::iswspace'
+          Write-Host '  _environ      -> dos_ci_environ_ptr (char** variable)'
           Write-Host "  temporary source: $windowsSource"
 
           $compile = @"
@@ -209,15 +195,8 @@ jobs:
             Copy-Item -LiteralPath $plugins -Destination $dist -Recurse -Force
           }
 
-          # Runtime distribution never contains tests or build products.
-          foreach ($name in @(
-            'tests',
-            'build',
-            'build-final',
-            'build-stage4-release',
-            'build-asan',
-            'dist'
-          )) {
+          # Tests and local build products are never included in the runtime artifact.
+          foreach ($name in @('tests', 'build', 'build-final', 'build-stage4-release', 'build-asan')) {
             $path = Join-Path $dist $name
             if (Test-Path -LiteralPath $path) {
               Remove-Item -LiteralPath $path -Recurse -Force
@@ -231,35 +210,20 @@ jobs:
           $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\dos.exe'
           $bytes = [System.IO.File]::ReadAllBytes($exe)
 
-          if ($bytes.Length -lt 0x100) {
-            throw 'dos.exe is too small.'
-          }
-
-          if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) {
-            throw 'Missing MZ signature.'
-          }
+          if ($bytes.Length -lt 0x100) { throw 'dos.exe is too small.' }
+          if ($bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Missing MZ signature.' }
 
           $peOffset = [BitConverter]::ToInt32($bytes, 0x3C)
-          if ($peOffset -lt 0 -or $peOffset + 24 -gt $bytes.Length) {
-            throw 'Invalid PE offset.'
-          }
-
-          if ($bytes[$peOffset] -ne 0x50 -or
-              $bytes[$peOffset + 1] -ne 0x45 -or
-              $bytes[$peOffset + 2] -ne 0x00 -or
-              $bytes[$peOffset + 3] -ne 0x00) {
+          if ($peOffset -lt 0 -or $peOffset + 24 -gt $bytes.Length) { throw 'Invalid PE offset.' }
+          if ($bytes[$peOffset] -ne 0x50 -or $bytes[$peOffset + 1] -ne 0x45 -or $bytes[$peOffset + 2] -ne 0 -or $bytes[$peOffset + 3] -ne 0) {
             throw 'Missing PE signature.'
           }
 
           $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
-          if ($machine -ne 0x8664) {
-            throw ('Unexpected PE machine: 0x{0:X4}; expected x64 (0x8664).' -f $machine)
-          }
+          if ($machine -ne 0x8664) { throw ('Unexpected PE machine: 0x{0:X4}' -f $machine) }
 
           $magic = [BitConverter]::ToUInt16($bytes, $peOffset + 24)
-          if ($magic -ne 0x20B) {
-            throw ('Unexpected optional-header magic: 0x{0:X4}; expected PE32+ (0x20B).' -f $magic)
-          }
+          if ($magic -ne 0x20B) { throw ('Unexpected optional-header magic: 0x{0:X4}' -f $magic) }
 
           Write-Host 'PE32+ x64 validation: PASS'
 
@@ -268,7 +232,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\dos.exe'
-
           & $exe --version
           if ($LASTEXITCODE -ne 0) {
             throw "dos.exe --version failed with exit code $LASTEXITCODE"
@@ -281,12 +244,9 @@ jobs:
           $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
           $forbidden = Get-ChildItem -LiteralPath $dist -Recurse -Force -ErrorAction SilentlyContinue |
             Where-Object { $_.FullName -match '\\tests(\\|$)' }
-
           if ($forbidden) {
-            $forbidden | Select-Object -ExpandProperty FullName
             throw 'Test files were included in the runtime distribution.'
           }
-
           Write-Host 'Test exclusion: PASS'
 
       - name: Create Windows distribution archive
@@ -295,11 +255,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
           $archive = Join-Path $env:GITHUB_WORKSPACE 'DOS-Windows-x64.zip'
-
-          if (Test-Path -LiteralPath $archive) {
-            Remove-Item -LiteralPath $archive -Force
-          }
-
+          if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
           Compress-Archive -Path (Join-Path $dist '*') -DestinationPath $archive -CompressionLevel Optimal
 
       - name: Upload Windows runtime
