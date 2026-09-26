@@ -19,21 +19,63 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
 
+      - name: Locate DOS source tree
+        id: locate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = $env:GITHUB_WORKSPACE
+
+          # The repository may contain the DOS project directly at its root
+          # or one level below it (for example: DOS/src/dos.cpp).
+          # Never search inside tests or generated build directories.
+          $candidate = Get-ChildItem -LiteralPath $repo -Recurse -File -Filter 'dos.cpp' |
+            Where-Object {
+              $_.FullName -match '\\src\\dos\.cpp$' -and
+              $_.FullName -notmatch '\\tests\\' -and
+              $_.FullName -notmatch '\\(?:build[^\\]*|dist|\.git)\\'
+            } |
+            Sort-Object @{ Expression = { $_.FullName.Length }; Ascending = $true } |
+            Select-Object -First 1
+
+          if ($null -eq $candidate) {
+            Write-Host 'Repository files under the first two levels:'
+            Get-ChildItem -LiteralPath $repo -Recurse -File -Depth 2 |
+              Where-Object { $_.FullName -notmatch '\\.git\\' } |
+              Select-Object -ExpandProperty FullName
+            throw "Could not locate src\dos.cpp anywhere in the repository."
+          }
+
+          $projectRoot = $candidate.Directory.Parent.FullName
+          $source = $candidate.FullName
+
+          Write-Host "Project root: $projectRoot"
+          Write-Host "Source:       $source"
+
+          "project_root=$projectRoot" >> $env:GITHUB_OUTPUT
+          "source=$source" >> $env:GITHUB_OUTPUT
+
       - name: Build DOS with MSVC
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $source = Join-Path $env:GITHUB_WORKSPACE 'src\dos.cpp'
-          if (-not (Test-Path $source)) {
+          $source = '${{ steps.locate.outputs.source }}'
+          $projectRoot = '${{ steps.locate.outputs.project_root }}'
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
+
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
             throw "Missing source file: $source"
           }
 
-          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          if (-not (Test-Path -LiteralPath (Join-Path $projectRoot 'src') -PathType Container)) {
+            throw "Invalid DOS project root: $projectRoot"
+          }
+
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
 
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
-          if (-not (Test-Path $vswhere)) {
+          if (-not (Test-Path -LiteralPath $vswhere)) {
             throw "vswhere.exe was not found: $vswhere"
           }
 
@@ -43,25 +85,28 @@ jobs:
           }
 
           $vcvars = Join-Path $vsPath 'VC\Auxiliary\Build\vcvars64.bat'
-          if (-not (Test-Path $vcvars)) {
+          if (-not (Test-Path -LiteralPath $vcvars)) {
             throw "vcvars64.bat was not found: $vcvars"
           }
+
+          $output = Join-Path $dist 'dos.exe'
 
           $compile = @"
           call "$vcvars"
           if errorlevel 1 exit /b %errorlevel%
-          cl.exe /nologo /std:c++20 /EHsc /permissive- /utf-8 /W4 /WX /O2 /GL /Gy /Gw /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX /DDOS_VERSION_MAJOR=1 /DDOS_VERSION_MINOR=0 "$source" /Fe:"$dist\dos.exe" /link /LTCG /OPT:REF /OPT:ICF /GUARD:CF /DYNAMICBASE /NXCOMPAT advapi32.lib iphlpapi.lib ws2_32.lib shell32.lib
+          cl.exe /nologo /std:c++20 /EHsc /permissive- /utf-8 /W4 /WX /O2 /GL /Gy /Gw /D_CRT_SECURE_NO_WARNINGS /DNOMINMAX /DDOS_VERSION_MAJOR=1 /DDOS_VERSION_MINOR=0 "$source" /Fe:"$output" /link /LTCG /OPT:REF /OPT:ICF /GUARD:CF /DYNAMICBASE /NXCOMPAT advapi32.lib iphlpapi.lib ws2_32.lib shell32.lib
           if errorlevel 1 exit /b %errorlevel%
           "@
 
           $tempBat = Join-Path $env:RUNNER_TEMP 'build-dos.bat'
           Set-Content -LiteralPath $tempBat -Value $compile -Encoding ASCII
+
           & cmd.exe /d /s /c "`"$tempBat`""
           if ($LASTEXITCODE -ne 0) {
             throw "MSVC build failed with exit code $LASTEXITCODE"
           }
 
-          if (-not (Test-Path (Join-Path $dist 'dos.exe'))) {
+          if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
             throw 'dos.exe was not produced.'
           }
 
@@ -69,27 +114,32 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $root = $env:GITHUB_WORKSPACE
-          $dist = Join-Path $root 'dist'
+          $projectRoot = '${{ steps.locate.outputs.project_root }}'
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
 
           foreach ($relative in @(
             'install_association.bat',
+            'build_windows.bat',
+            'build_windows_llvm_mingw.bat',
             'hello.dos'
           )) {
-            $source = Join-Path $root $relative
-            if (Test-Path $source) {
+            $source = Join-Path $projectRoot $relative
+            if (Test-Path -LiteralPath $source -PathType Leaf) {
               Copy-Item -LiteralPath $source -Destination $dist -Force
             }
           }
 
-          $plugins = Join-Path $root 'plugins'
-          if (Test-Path $plugins) {
+          $plugins = Join-Path $projectRoot 'plugins'
+          if (Test-Path -LiteralPath $plugins -PathType Container) {
             Copy-Item -LiteralPath $plugins -Destination $dist -Recurse -Force
           }
 
-          $tests = Join-Path $dist 'tests'
-          if (Test-Path $tests) {
-            Remove-Item -LiteralPath $tests -Recurse -Force
+          # Tests and generated artifacts are never part of the runtime package.
+          foreach ($name in @('tests', 'build', 'build-final', 'build-stage4-release', 'build-asan', 'dist')) {
+            $path = Join-Path $dist $name
+            if (Test-Path -LiteralPath $path) {
+              Remove-Item -LiteralPath $path -Recurse -Force
+            }
           }
 
       - name: Verify Windows PE
@@ -136,10 +186,26 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = Join-Path $env:GITHUB_WORKSPACE 'dist\dos.exe'
+
           & $exe --version
           if ($LASTEXITCODE -ne 0) {
             throw "dos.exe --version failed with exit code $LASTEXITCODE"
           }
+
+      - name: Verify tests are excluded
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
+          $forbidden = Get-ChildItem -LiteralPath $dist -Recurse -Force -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\tests(\\|$)' }
+
+          if ($forbidden) {
+            $forbidden | Select-Object -ExpandProperty FullName
+            throw 'Test files were included in the runtime distribution.'
+          }
+
+          Write-Host 'Test exclusion: PASS'
 
       - name: Create Windows distribution archive
         shell: pwsh
@@ -148,7 +214,7 @@ jobs:
           $dist = Join-Path $env:GITHUB_WORKSPACE 'dist'
           $archive = Join-Path $env:GITHUB_WORKSPACE 'DOS-Windows-x64.zip'
 
-          if (Test-Path $archive) {
+          if (Test-Path -LiteralPath $archive) {
             Remove-Item -LiteralPath $archive -Force
           }
 
